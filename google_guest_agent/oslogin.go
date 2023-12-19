@@ -148,18 +148,26 @@ func (o *osloginMgr) Set(ctx context.Context) error {
 		logger.Errorf("Error updating group.conf: %v.", err)
 	}
 
+	tryRestarter := systemctlTryRestart
+	if openRCInstalled(ctx) {
+		tryRestarter = openRCTryRestsart
+	}
 	for _, svc := range []string{"nscd", "unscd", "systemd-logind", "cron", "crond"} {
 		// These services should be restarted if running
 		logger.Debugf("systemctl try-restart %s, if it exists", svc)
-		if err := systemctlTryRestart(ctx, svc); err != nil {
+		if err := tryRestarter(ctx, svc); err != nil {
 			logger.Errorf("Error restarting service: %v.", err)
 		}
 	}
 
 	// SSH should be started if not running, reloaded otherwise.
+	reloadOrRestarter := systemctlReloadOrRestart
+	if openRCInstalled(ctx) {
+		reloadOrRestarter = openRCReloadOrRestart
+	}
 	for _, svc := range []string{"ssh", "sshd"} {
 		logger.Debugf("systemctl reload-or-restart %s, if it exists", svc)
-		if err := systemctlReloadOrRestart(ctx, svc); err != nil {
+		if err := reloadOrRestarter(ctx, svc); err != nil {
 			logger.Errorf("Error reloading service: %v.", err)
 		}
 	}
@@ -446,4 +454,32 @@ func systemctlStart(ctx context.Context, servicename string) error {
 func systemctlUnitExists(ctx context.Context, servicename string) bool {
 	res := run.WithOutput(ctx, "systemctl", "list-units", "--all", servicename+".service")
 	return !strings.Contains(res.StdOut, "0 loaded units listed")
+}
+
+// openRCTryRestsart tries to restart an OpenRC service if it is already running.
+// Stopped service will be ignored.
+func openRCTryRestsart(ctx context.Context, servicename string) error {
+	if !openRCServiceExists(ctx, servicename) {
+		return nil
+	}
+	return run.Quiet(ctx, "rc-service", servicename, "restart")
+
+}
+
+// openRCReloadOrRestart tries to reload a running OpenRC service if
+// supported, restart otherwise. Stopped services will be started.
+func openRCReloadOrRestart(ctx context.Context, servicename string) error {
+	if !openRCServiceExists(ctx, servicename) {
+		return nil
+	}
+	return run.Quiet(ctx, "rc-service", servicename, "restart")
+}
+
+func openRCServiceExists(ctx context.Context, servicename string) bool {
+	res := run.WithOutput(ctx, "rc-service", servicename, "status")
+	return !strings.Contains(res.StdOut, "0 loaded units listed")
+}
+
+func openRCInstalled(ctx context.Context) bool {
+	return run.WithOutput(ctx, "rc-service", "--version").ExitCode == 0
 }
